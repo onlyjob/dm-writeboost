@@ -8,7 +8,7 @@
 #include "dm-writeboost-metadata.h"
 #include "dm-writeboost-daemon.h"
 
-#include <linux/rbtree.h>
+#include <linux/list_sort.h>
 
 /*----------------------------------------------------------------*/
 
@@ -201,23 +201,20 @@ static void submit_migrate_ios(struct wb_device *wb)
 	struct blk_plug plug;
 	struct rb_root mt = wb->migrate_tree;
 	blk_start_plug(&plug);
-	do {
-		struct migrate_io *mio = migrate_io_from_node(rb_first(&mt));
-		rb_erase(&mio->rb_node, &mt);
+	list_for_each_entry(mio, &wb->sort_list, sort_node)
 		submit_migrate_io(wb, mio);
-	} while (!RB_EMPTY_ROOT(&mt));
 	blk_finish_plug(&plug);
 }
 
-static bool compare_migrate_io(struct migrate_io *mio, struct migrate_io *pmio)
+static int do_compare_migrate_io(struct migrate_io *mio, struct migrate_io *pmio)
 {
 	BUG_ON(!mio);
 	BUG_ON(!pmio);
 	if (mio->sector < pmio->sector)
-		return true;
+		return -1;
 	if (mio->id < pmio->id)
-		return true;
-	return false;
+		return -1;
+	return 1;
 }
 
 static void inc_migrate_io_count(u8 dirty_bits, size_t *migrate_io_count)
@@ -238,21 +235,7 @@ static void inc_migrate_io_count(u8 dirty_bits, size_t *migrate_io_count)
 
 static void add_migrate_io(struct wb_device *wb, struct migrate_io *mio)
 {
-	struct rb_node **rbp, *parent;
-	rbp = &wb->migrate_tree.rb_node;
-	parent = NULL;
-	while (*rbp) {
-		struct migrate_io *pmio;
-		parent = *rbp;
-		pmio = migrate_io_from_node(parent);
-
-		if (compare_migrate_io(mio, pmio))
-			rbp = &(*rbp)->rb_left;
-		else
-			rbp = &(*rbp)->rb_right;
-	}
-	rb_link_node(&mio->rb_node, parent, rbp);
-	rb_insert_color(&mio->rb_node, &wb->migrate_tree);
+	list_add_tail(mio->sort_node, wb->sort_list);
 }
 
 static void prepare_migrate_ios(struct wb_device *wb, struct segment_header *seg,
@@ -286,9 +269,12 @@ static void prepare_migrate_ios(struct wb_device *wb, struct segment_header *seg
 		mio->sector = mb->sector;
 		mio->data = p + (i << 12);
 		mio->id = seg->id;
+		INIT_LIST_HEAD(&mio->sort_node);
 
 		add_migrate_io(wb, mio);
 	}
+
+	list_sort();
 }
 
 static void cleanup_segment(struct wb_device *wb, struct segment_header *seg)
@@ -305,7 +291,7 @@ static void transport_emigrates(struct wb_device *wb)
 	int r;
 	size_t k, migrate_io_count = 0;
 
-	wb->migrate_tree = RB_ROOT;
+	INIT_LIST_HEAD(&wb->sort_list);
 
 	for (k = 0; k < wb->num_emigrates; k++)
 		prepare_migrate_ios(wb, *(wb->emigrates + k), k, &migrate_io_count);

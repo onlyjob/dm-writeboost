@@ -239,7 +239,7 @@ struct plog_meta_device {
 /*----------------------------------------------------------------*/
 
 struct migrate_io {
-	struct rb_node rb_node;
+	struct list_head sort_node;
 
 	sector_t sector; /* key */
 	u64 id; /* key */
@@ -414,7 +414,7 @@ struct wb_device {
 	u32 nr_cur_batched_migration;
 	u32 nr_max_batched_migration; /* tunable */
 
-	struct rb_root migrate_tree;
+	struct list_head sort_list;
 
 	u32 num_emigrates; /* number of emigrates */
 	struct segment_header **emigrates; /* segments to be migrated */
